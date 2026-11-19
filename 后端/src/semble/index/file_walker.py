@@ -1,0 +1,146 @@
+import os
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from pathspec import GitIgnoreSpec
+
+
+@dataclass(frozen=True)
+class IgnoreSpec:
+    base: Path
+    spec: GitIgnoreSpec
+
+
+_DEFAULT_IGNORED_DIRS: frozenset[str] = frozenset(
+    {
+        ".git/",
+        ".hg/",
+        ".svn/",
+        "__pycache__/",
+        "node_modules/",
+        ".venv/",
+        "venv/",
+        ".tox/",
+        ".mypy_cache/",
+        ".pytest_cache/",
+        ".ruff_cache/",
+        ".cache/",
+        ".semble/",
+        ".next/",
+        "dist/",
+        "build/",
+        ".eggs/",
+    }
+)
+
+
+def _load_ignore_for_dir(directory: Path, allow_path: Callable[[Path], bool] | None) -> GitIgnoreSpec | None:
+    """Loads a gitignore and sembleignore for a dir."""
+    lines = []
+    for name in (".gitignore", ".sembleignore"):
+        path = directory / name
+        if (allow_path is None or allow_path(path)) and path.is_file():
+            lines.extend(path.read_text(encoding="utf-8", errors="ignore").splitlines())
+    if lines:
+        return GitIgnoreSpec.from_lines(lines)
+    return None
+
+
+def walk_files(
+    root: Path,
+    extensions: Sequence[str],
+    ignore: Sequence[str] | None = None,
+    *,
+    allow_path: Callable[[Path], bool] | None = None,
+) -> Iterator[Path]:
+    """Yield files under root matching extensions, skipping ignored paths.
+
+    Directories matching DEFAULT_IGNORED_DIRS plus any names in ignore are always
+    skipped. If the root contains a .gitignore, its patterns are also honoured.
+
+    :param root: Root directory to walk.
+    :param extensions: List of file extensions to match.
+    :param ignore: Additional patterns to ignore.
+    :param allow_path: Optional policy checked before opening or descending into a path.
+    :yield: Path to each file under root matching the criteria.
+    :ytype: Path
+    """
+    extensions_set = frozenset(extensions)
+    dir_patterns = list(sorted(_DEFAULT_IGNORED_DIRS)) + list(ignore or [])
+    base_spec = GitIgnoreSpec.from_lines(dir_patterns, backend="simple")
+    s = IgnoreSpec(base=root, spec=base_spec)
+    yield from _walk(root, [s], extensions_set, allow_path)
+
+
+def _is_ignored(path: Path, is_dir: bool, specs: list[IgnoreSpec]) -> tuple[bool, bool]:
+    """Check if a path is ignored by any of the provided ignore specs."""
+    path_str = str(path)
+    ignored = False
+    found = False
+    for ignore_spec in specs:
+        base = str(ignore_spec.base)
+        # Paths under Path(".") have no "./" prefix.
+        base = "" if base == "." else os.path.join(base, "")
+        # If the base is not an ancestor of the path, this spec does not apply.
+        if not path_str.startswith(base):
+            continue
+
+        relative_str = path_str[len(base) :].replace(os.sep, "/")
+        # We need to add a trailing slash. Gitignore
+        # matches dirs as trailing '/'.
+        if is_dir:
+            relative_str += "/"
+
+        # Loop over all the patterns
+        for pattern in ignore_spec.spec.patterns:
+            # This pattern doesn't do anything.
+            if pattern.include is None:
+                continue
+
+            if pattern.match_file(relative_str) is not None:
+                ignored = pattern.include
+                # Bypass extension filter only for negation patterns with a file
+                # extension suffix (e.g. !special.kjs, !*.py). Patterns without
+                # a suffix (e.g. !vendor/, !.github/*) target directories or
+                # broad globs and should not bypass extension filtering.
+                pat = pattern.pattern
+                found = not ignored and isinstance(pat, str) and bool(Path(pat.rstrip("/")).suffix)
+
+    return ignored, found
+
+
+def _walk(
+    directory: Path,
+    inherited_specs: list[IgnoreSpec],
+    extensions: frozenset[str],
+    allow_path: Callable[[Path], bool] | None,
+) -> Iterator[Path]:
+    """Recursive function for walking files under a directory."""
+    if allow_path is not None and not allow_path(directory):
+        return
+    spec = _load_ignore_for_dir(directory, allow_path)
+    if spec is not None:
+        inherited_specs = [
+            *inherited_specs,
+            IgnoreSpec(base=directory, spec=spec),
+        ]
+
+    try:
+        with os.scandir(directory) as entries:
+            # Don't follow symlinks
+            items = sorted((Path(entry.path), entry) for entry in entries if not entry.is_symlink())
+    except (FileNotFoundError, NotADirectoryError):
+        return  # removed or replaced since its parent was listed
+    for item, entry in items:
+        if allow_path is not None and not allow_path(item):
+            continue
+        is_dir = entry.is_dir()
+        is_ignored, found = _is_ignored(item, is_dir, inherited_specs)
+        if is_ignored:
+            continue
+
+        if is_dir:
+            yield from _walk(item, inherited_specs, extensions, allow_path)
+        elif entry.is_file() and (found or item.suffix.lower() in extensions):
+            yield item

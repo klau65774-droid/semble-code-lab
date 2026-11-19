@@ -1,0 +1,32 @@
+# Virtual environments & Python bytecode
+.venv/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+*.xml
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node & Frontend build outputs
+**/node_modules/
+前端/dist/
+**/.vite/
+
+# Local secrets & environment files
+.env
+.env.*
+!.env.example
+
+# Internal AI planning scratch & reference mockups
+ui_reference.png
+前端/docs/superpowers/
+
+# OS metadata
+.DS_Store
+Thumbs.db

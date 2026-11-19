@@ -1,0 +1,384 @@
+from __future__ import annotations
+
+import importlib.metadata
+import json
+import os
+import shutil
+import sys
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Literal
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+
+from semble.version import __version__
+
+_HOME = Path.home()
+
+
+def _exists_or_denied(path: Path) -> bool:
+    """Distinguish between existence and permission issues."""
+    try:
+        path.stat()
+    except PermissionError:  # checked before OSError, its parent class
+        return True
+    except OSError:
+        return False
+    return True
+
+
+Action = Literal["created", "updated", "unchanged", "not-found", "removed", "error", "skipped"]
+Mode = Literal["install", "uninstall"]
+
+
+class IntegrationType(str, Enum):
+    """Identifier for one of semble's install/uninstall integrations."""
+
+    MCP = "mcp"
+    INSTRUCTIONS = "instructions"
+    SUBAGENT = "subagent"
+    SKILL = "skill"
+
+
+SEMBLE_START = "<!-- SEMBLE_START -->"
+SEMBLE_END = "<!-- SEMBLE_END -->"
+
+
+def semble_pin() -> str:
+    """Return the uvx --from specifier for the semble MCP server."""
+    try:
+        raw = importlib.metadata.distribution("semble").read_text("direct_url.json")
+        if raw:
+            data = json.loads(raw)
+            url = data.get("url", "")
+            if "dir_info" in data and url.startswith("file://"):
+                path = url2pathname(urlparse(url).path)
+                return f"{path}[mcp]"
+            vcs_info = data.get("vcs_info", {})
+            if vcs_info.get("vcs") == "git" and vcs_info.get("commit_id"):
+                return f"git+{url}@{vcs_info['commit_id']}#egg=semble[mcp]"
+    except Exception:
+        pass
+    return f"semble[mcp]=={__version__}"
+
+
+SEMBLE_PIN = semble_pin()
+
+_STDIO_SERVER_CONFIG: dict[str, object] = {
+    "command": "uvx",
+    "args": ["--from", SEMBLE_PIN, "semble"],
+    "type": "stdio",
+}
+
+_OPENCODE_SERVER_CONFIG: dict[str, object] = {
+    "command": ["uvx", "--from", SEMBLE_PIN, "semble"],
+    "type": "local",  # opencode uses "local"/"remote", not "stdio"
+    "enabled": True,
+}
+
+_BARE_STDIO_SERVER_CONFIG: dict[str, object] = {  # Windsurf: command/args only, no "type"
+    "command": "uvx",
+    "args": ["--from", SEMBLE_PIN, "semble"],
+}
+
+_CLINE_SERVER_CONFIG: dict[str, object] = {  # Cline: nested "transport" (the flat shape is legacy)
+    "transport": {"type": "stdio", "command": "uvx", "args": ["--from", SEMBLE_PIN, "semble"]},
+}
+
+_ZED_SERVER_CONFIG: dict[str, object] = {  # Zed: command/args only, no "source"
+    "command": "uvx",
+    "args": ["--from", SEMBLE_PIN, "semble"],
+}
+
+INSTRUCTIONS = f"""\
+{SEMBLE_START}
+## Semble Code Search
+
+A `semble` MCP server is available with two tools:
+- `search` — search the codebase with a natural-language or code query.
+- `find_related` — find code similar to a specific file and line.
+
+Use semble's `search` tool to find where something is implemented — instead of using Grep or Glob to discover files. After semble returns the file and line, navigate there directly and read that file. Do not grep for the same content again.
+
+Pass `content="docs"` to the MCP search tool for documentation and prose, `content="config"` for config files, or `content="all"` for everything. On the CLI, use `--content docs`, `--content config`, or `--content all` instead.
+
+For CLI fallback or sub-agents without MCP access, use:
+
+```bash
+semble search "authentication flow" ./my-project --max-snippet-lines 10
+semble search "deployment guide" ./my-project --content docs
+semble search "database host port" ./my-project --content config
+semble find-related src/auth.py 42 ./my-project
+semble search "save model to disk" ./my-project --top-k 10
+```
+
+The index is built on first run and cached automatically. If `semble` is not on `$PATH`, use `uvx --from "{SEMBLE_PIN}" semble`.
+
+### Workflow
+
+1. Call semble's `search` tool with a query describing what the code does or its name. The tool returns results with 10 lines of context each (function/class signature + first body lines, enough to confirm the location).
+2. Navigate directly to the top result's file and line. Read only the function or class at that location.
+3. Make the edit. Do not re-search or grep for the same content.
+4. Set the MCP search tool's `content` field to `docs`, `config`, or `all` when searching beyond code.
+5. Optionally use semble's `find_related` tool with `file_path`, `line`, and the same `content` selection to discover similar code elsewhere.
+6. Use Grep only when you need every occurrence of a literal string across the whole repo (e.g., all callers of a renamed function).
+{SEMBLE_END}
+"""
+
+SKILL_POINTER = f"{SEMBLE_START}\nUse the `semble` skill for code search instead of Grep or Glob.\n{SEMBLE_END}\n"
+
+
+@dataclass(frozen=True)
+class McpConfig:
+    """MCP integration config for one agent."""
+
+    path: Path
+    key: str
+    entry: dict[str, object]
+    format: Literal["json", "toml"] = "json"
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """Result of a single file write operation."""
+
+    path: Path
+    action: Action
+
+
+@dataclass(frozen=True)
+class AgentTarget:
+    """Configuration for a single coding agent integration target."""
+
+    id: str
+    display_name: str
+    binary: str | None  # for shutil.which detection
+    config_dir: Path | None  # directory existence check for detection
+    mcp: McpConfig | None
+    instructions_path: Path | None  # None = not supported for this agent
+    subagent_path: Path | None = None  # global (user-level) sub-agent file; None = unsupported
+    skill_path: Path | None = None  # global (user-level) SKILL.md; None = unsupported
+
+
+# Cross-agent skills directory, read by Codex, Cursor, Gemini CLI, Copilot, OpenCode, Pi and Kilo.
+_SHARED_SKILL_PATH = _HOME / ".agents" / "skills" / "semble" / "SKILL.md"
+
+
+def _xdg_config_dir(app: str) -> Path:
+    """Return an XDG app's config directory (e.g. opencode, kilo), honoring XDG_CONFIG_HOME."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return Path(xdg) / app if xdg else _HOME / ".config" / app
+
+
+def _xdg_jsonc_path(app: str) -> Path:
+    """Return an XDG app's config path (e.g. opencode, kilo), preferring .jsonc over .json."""
+    base = _xdg_config_dir(app)
+    jsonc = base / f"{app}.jsonc"
+    json_ = base / f"{app}.json"
+    return jsonc if _exists_or_denied(jsonc) else (json_ if _exists_or_denied(json_) else jsonc)
+
+
+def _vscode_mcp_path() -> Path:
+    """Return the user-level VS Code mcp.json path for the current OS."""
+    if sys.platform == "darwin":
+        base = _HOME / "Library" / "Application Support" / "Code" / "User"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", _HOME)) / "Code" / "User"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", _HOME / ".config")) / "Code" / "User"
+    return base / "mcp.json"
+
+
+AGENTS: list[AgentTarget] = [
+    AgentTarget(
+        id="claude",
+        display_name="Claude Code",
+        binary="claude",
+        config_dir=_HOME / ".claude",
+        mcp=McpConfig(_HOME / ".claude.json", "mcpServers", _STDIO_SERVER_CONFIG),
+        instructions_path=_HOME / ".claude" / "CLAUDE.md",
+        subagent_path=_HOME / ".claude" / "agents" / "semble-search.md",
+        skill_path=_HOME / ".claude" / "skills" / "semble" / "SKILL.md",
+    ),
+    AgentTarget(
+        id="cursor",
+        display_name="Cursor",
+        binary="cursor",
+        config_dir=_HOME / ".cursor",
+        mcp=McpConfig(_HOME / ".cursor" / "mcp.json", "mcpServers", _STDIO_SERVER_CONFIG),
+        instructions_path=None,  # Cursor instructions are project-local .mdc files
+        subagent_path=_HOME / ".cursor" / "agents" / "semble-search.md",
+        skill_path=_SHARED_SKILL_PATH,
+    ),
+    AgentTarget(
+        id="gemini",
+        display_name="Gemini CLI",
+        binary="gemini",
+        config_dir=_HOME / ".gemini",
+        mcp=McpConfig(_HOME / ".gemini" / "settings.json", "mcpServers", _STDIO_SERVER_CONFIG),
+        instructions_path=_HOME / ".gemini" / "GEMINI.md",
+        subagent_path=_HOME / ".gemini" / "agents" / "semble-search.md",
+        skill_path=_SHARED_SKILL_PATH,
+    ),
+    AgentTarget(
+        id="kiro",
+        display_name="Kiro",
+        binary="kiro",
+        config_dir=_HOME / ".kiro",
+        mcp=McpConfig(_HOME / ".kiro" / "settings" / "mcp.json", "mcpServers", _STDIO_SERVER_CONFIG),
+        instructions_path=_HOME / ".kiro" / "steering" / "semble.md",
+        subagent_path=_HOME / ".kiro" / "agents" / "semble-search.md",
+    ),
+    AgentTarget(
+        id="opencode",
+        display_name="Opencode",
+        binary="opencode",
+        config_dir=_xdg_config_dir("opencode"),
+        mcp=McpConfig(_xdg_jsonc_path("opencode"), "mcp", _OPENCODE_SERVER_CONFIG),
+        instructions_path=_xdg_config_dir("opencode") / "AGENTS.md",
+        subagent_path=_xdg_config_dir("opencode") / "agents" / "semble-search.md",
+        skill_path=_SHARED_SKILL_PATH,
+    ),
+    AgentTarget(
+        id="copilot",
+        display_name="GitHub Copilot",
+        binary=None,
+        config_dir=_HOME / ".config" / "github-copilot",
+        mcp=McpConfig(_HOME / ".copilot" / "mcp-config.json", "mcpServers", _BARE_STDIO_SERVER_CONFIG),
+        instructions_path=None,
+        subagent_path=_HOME / ".copilot" / "agents" / "semble-search.agent.md",
+        skill_path=_SHARED_SKILL_PATH,
+    ),
+    AgentTarget(
+        id="codex",
+        display_name="Codex",
+        binary="codex",
+        config_dir=_HOME / ".codex",
+        mcp=McpConfig(_HOME / ".codex" / "config.toml", "mcp_servers", _STDIO_SERVER_CONFIG, format="toml"),
+        instructions_path=_HOME / ".codex" / "AGENTS.md",
+        subagent_path=_HOME / ".codex" / "agents" / "semble-search.toml",
+        skill_path=_SHARED_SKILL_PATH,
+    ),
+    AgentTarget(
+        id="zcode",
+        display_name="ZCode",
+        binary=None,
+        config_dir=_HOME / ".zcode",
+        mcp=McpConfig(_HOME / ".zcode" / "cli" / "config.json", "mcp.servers", _STDIO_SERVER_CONFIG),
+        instructions_path=_HOME / ".zcode" / "AGENTS.md",
+        subagent_path=_HOME / ".zcode" / "agents" / "semble-search.md",
+    ),
+    AgentTarget(
+        id="vscode",
+        display_name="VS Code",
+        binary="code",
+        config_dir=None,
+        mcp=McpConfig(_vscode_mcp_path(), "servers", _STDIO_SERVER_CONFIG),
+        instructions_path=None,
+    ),
+    AgentTarget(
+        id="windsurf",
+        display_name="Windsurf",
+        binary="windsurf",
+        config_dir=_HOME / ".codeium" / "windsurf",
+        mcp=McpConfig(_HOME / ".codeium" / "windsurf" / "mcp_config.json", "mcpServers", _BARE_STDIO_SERVER_CONFIG),
+        instructions_path=None,
+    ),
+    AgentTarget(
+        id="zed",
+        display_name="Zed",
+        binary="zed",
+        config_dir=_HOME / ".config" / "zed",
+        mcp=McpConfig(_HOME / ".config" / "zed" / "settings.json", "context_servers", _ZED_SERVER_CONFIG),
+        instructions_path=None,
+    ),
+    AgentTarget(
+        id="reasonix",
+        display_name="Reasonix",
+        binary="reasonix",
+        config_dir=_HOME / ".config" / "reasonix",
+        # ~/.reasonix/config.json is the legacy v0.x path still read by v1.x for backwards compat.
+        # The v1.x canonical config is ~/.config/reasonix/config.toml ([[plugins]]), but the JSON
+        # path requires no special TOML handling and works for new users who have never had v0.x.
+        mcp=McpConfig(_HOME / ".reasonix" / "config.json", "mcpServers", _BARE_STDIO_SERVER_CONFIG),
+        instructions_path=_HOME / ".config" / "reasonix" / "REASONIX.md",
+        subagent_path=_HOME / ".reasonix" / "skills" / "semble-search.md",
+    ),
+    AgentTarget(
+        id="pi",
+        display_name="Pi",
+        binary="pi",
+        config_dir=_HOME / ".pi",
+        mcp=McpConfig(_HOME / ".pi" / "agent" / "mcp.json", "mcpServers", _BARE_STDIO_SERVER_CONFIG),
+        instructions_path=None,
+        subagent_path=_HOME / ".pi" / "agents" / "semble-search.md",
+        skill_path=_SHARED_SKILL_PATH,
+    ),
+    AgentTarget(
+        id="commandcode",
+        display_name="Command Code",
+        binary=None,
+        config_dir=_HOME / ".commandcode",
+        mcp=McpConfig(_HOME / ".commandcode" / "mcp.json", "mcpServers", _BARE_STDIO_SERVER_CONFIG),
+        instructions_path=_HOME / ".commandcode" / "AGENTS.md",
+        subagent_path=_HOME / ".commandcode" / "agents" / "semble-search.md",
+    ),
+    AgentTarget(
+        id="antigravity",
+        display_name="Antigravity",
+        binary="agy",
+        config_dir=_HOME / ".gemini" / "antigravity-cli",
+        mcp=McpConfig(_HOME / ".gemini" / "config" / "mcp_config.json", "mcpServers", _STDIO_SERVER_CONFIG),
+        instructions_path=_HOME / ".gemini" / "GEMINI.md",
+        subagent_path=_HOME / ".gemini" / "config" / "skills" / "semble-search" / "SKILL.md",
+    ),
+    AgentTarget(
+        id="grok",
+        display_name="Grok Build",
+        binary="grok",
+        config_dir=_HOME / ".grok",
+        mcp=McpConfig(_HOME / ".grok" / "config.toml", "mcp_servers", _STDIO_SERVER_CONFIG, format="toml"),
+        instructions_path=_HOME / ".grok" / "AGENTS.md",
+        subagent_path=_HOME / ".grok" / "agents" / "semble-search.md",
+    ),
+    AgentTarget(
+        id="qwen",
+        display_name="Qwen Code",
+        binary="qwen",
+        config_dir=_HOME / ".qwen",
+        mcp=McpConfig(_HOME / ".qwen" / "settings.json", "mcpServers", _STDIO_SERVER_CONFIG),
+        instructions_path=_HOME / ".qwen" / "QWEN.md",
+        subagent_path=_HOME / ".qwen" / "agents" / "semble-search.md",
+        skill_path=_HOME / ".qwen" / "skills" / "semble" / "SKILL.md",
+    ),
+    AgentTarget(
+        id="cline",
+        display_name="Cline",
+        binary="cline",
+        config_dir=_HOME / ".cline",
+        # Shared by the Cline IDE extensions, CLI, and SDK.
+        mcp=McpConfig(
+            _HOME / ".cline" / "data" / "settings" / "cline_mcp_settings.json", "mcpServers", _CLINE_SERVER_CONFIG
+        ),
+        instructions_path=_HOME / ".cline" / "rules" / "semble.md",
+        subagent_path=None,  # Cline agents are YAML team definitions with Cline-specific tool names
+    ),
+    AgentTarget(
+        id="kilo",
+        display_name="Kilo Code",
+        binary="kilo",
+        config_dir=_xdg_config_dir("kilo"),
+        mcp=McpConfig(_xdg_jsonc_path("kilo"), "mcp", _OPENCODE_SERVER_CONFIG),
+        instructions_path=_xdg_config_dir("kilo") / "AGENTS.md",
+        subagent_path=_xdg_config_dir("kilo") / "agents" / "semble-search.md",
+        skill_path=_SHARED_SKILL_PATH,
+    ),
+]
+
+
+def is_detected(agent: AgentTarget) -> bool:
+    """Return True if the agent appears to be installed."""
+    if agent.binary and shutil.which(agent.binary):
+        return True
+    return bool(agent.config_dir and _exists_or_denied(agent.config_dir))

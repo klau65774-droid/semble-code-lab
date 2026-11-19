@@ -1,0 +1,492 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import tempfile
+import warnings
+from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
+from datetime import datetime
+from functools import cached_property
+from pathlib import Path
+
+import numpy as np
+import numpy.typing as npt
+import orjson
+from model2vec.model import StaticModel
+from vicinity.backends.basic import BasicArgs
+
+from semble.cache import get_validated_cache, load_previous_for_incremental
+from semble.chunking.chunking import _DESIRED_CHUNK_LENGTH_CHARS
+from semble.context_packer import estimate_tokens
+from semble.index.bm25 import BM25
+from semble.index.create import build_bilingual_bm25, create_index_from_path
+from semble.index.dense import SelectableBasicBackend, load_model
+from semble.index.files import MAX_FILE_BYTES, read_file_text
+from semble.index.types import CACHE_FORMAT_VERSION, FileManifestEntry, PersistencePath, PreviousIndex
+from semble.search import _search_semantic, search, search_explained
+from semble.stats import save_search_stats
+from semble.types import (
+    CallType,
+    Chunk,
+    ChunkPreview,
+    ContentType,
+    ExplainedSearchResponse,
+    IndexStats,
+    SearchMode,
+    SearchResult,
+)
+from semble.utils import is_git_url
+
+_GIT_CLONE_TIMEOUT = int(os.environ.get("SEMBLE_CLONE_TIMEOUT", 60))
+_DEFAULT_CONTENT: tuple[ContentType, ...] = (ContentType.CODE,)
+_ALL_CONTENT: tuple[ContentType, ...] = (ContentType.CODE, ContentType.DOCS, ContentType.CONFIG)
+_INCLUDE_TEXT_FILES_DEPRECATION_MSG = (
+    "include_text_files is deprecated and will be removed in a future version. "
+    "Use content=(ContentType.CODE, ContentType.DOCS, ContentType.CONFIG) instead."
+)
+
+
+def _apply_include_text_files(
+    content: ContentType | Sequence[ContentType], include_text_files: bool | None
+) -> tuple[ContentType, ...]:
+    """Apply the deprecated include_text_files override, emitting a DeprecationWarning."""
+    if include_text_files is None:
+        return (content,) if isinstance(content, ContentType) else tuple(content)
+    warnings.warn(
+        _INCLUDE_TEXT_FILES_DEPRECATION_MSG,
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return _ALL_CONTENT if include_text_files else _DEFAULT_CONTENT
+
+
+class SembleIndex:
+    """Fast local code index with hybrid search."""
+
+    def __init__(
+        self,
+        model: StaticModel,
+        bm25_index: BM25,
+        semantic_index: SelectableBasicBackend,
+        chunks: list[Chunk],
+        model_path: str,
+        root: Path | None = None,
+        content: ContentType | Sequence[ContentType] = _DEFAULT_CONTENT,
+        loaded_from_disk: bool = False,
+        manifest: dict[str, FileManifestEntry] | None = None,
+    ) -> None:
+        """Initialize a SembleIndex. Should be created with from_path or from_git.
+
+        :param model: Embedding model to use.
+        :param bm25_index: The bm25 index.
+        :param semantic_index: The semantic index.
+        :param chunks: The found chunks.
+        :param model_path: Path to the model file.
+        :param root: Root directory used to read file sizes for token-savings stats.
+        :param content: Content type used when indexing; controls the search pipeline.
+        :param loaded_from_disk: Whether the index was loaded from disk (cache hit); controls CLI messaging.
+        :param manifest: File modification times and chunk ranges used for incremental reindexing.
+        """
+        self.model = model
+        self.chunks: list[Chunk] = chunks
+        self._bm25_index: BM25 = bm25_index
+        self._semantic_index: SelectableBasicBackend = semantic_index
+        self._model_path: str = model_path
+        self._root: Path | None = root
+        self._content: tuple[ContentType, ...] = (content,) if isinstance(content, ContentType) else tuple(content)
+        self._file_sizes: dict[str, int] = self._compute_file_sizes(root) if root else {}
+        self._file_mapping, self._language_mapping = self._populate_mapping()
+        self.loaded_from_disk: bool = loaded_from_disk
+        self._manifest: dict[str, FileManifestEntry] = manifest or {}
+        self.sources: dict[str, str] = {}  # repo label -> source, only set on indexes built by merge()
+
+    def _populate_mapping(self) -> tuple[dict[str, list[int]], dict[str, list[int]]]:
+        """Build (file → chunk indices, language → chunk indices) mappings, in that order."""
+        language_to_id = defaultdict(list)
+        file_to_id = defaultdict(list)
+        for i, chunk in enumerate(self.chunks):
+            language = chunk.language
+            if language:
+                language_to_id[language].append(i)
+            file_to_id[chunk.file_path].append(i)
+
+        return dict(file_to_id), dict(language_to_id)
+
+    def _compute_file_sizes(self, root: Path) -> dict[str, int]:
+        """Return a mapping of repo-relative file path to total character count."""
+        sizes: dict[str, int] = {}
+        for chunk in self.chunks:
+            if chunk.file_path in sizes:
+                continue
+            try:
+                sizes[chunk.file_path] = (root / chunk.file_path).stat().st_size
+            except OSError:
+                pass
+        return sizes
+
+    @property
+    def stats(self) -> IndexStats:
+        """Stats of an index."""
+        return IndexStats(
+            indexed_files=len(self._file_mapping),
+            total_chunks=len(self.chunks),
+            languages={language: len(ids) for language, ids in self._language_mapping.items()},
+        )
+
+    @property
+    def content(self) -> tuple[ContentType, ...]:
+        """Return the content types covered by this index."""
+        return self._content
+
+    @classmethod
+    def from_path(
+        cls,
+        path: str | Path,
+        content: ContentType | Sequence[ContentType] = _DEFAULT_CONTENT,
+        include_text_files: bool | None = None,
+        model_path: str | None = None,
+        show_progress_bar: bool = False,
+    ) -> SembleIndex:
+        """Create and index a SembleIndex from a directory.
+
+        :param path: Root directory to index.
+        :param content: Content types to index, e.g. ContentType.CODE or [ContentType.CODE, ContentType.DOCS].
+        :param include_text_files: Deprecated. Pass a content sequence directly instead.
+        :param model_path: Path to the model to use. If None, the default model will be used.
+        :param show_progress_bar: Show a progress bar while indexing.
+        :return: An indexed SembleIndex. Chunk file paths are relative to ``path``.
+        :raises FileNotFoundError: If `path` does not exist.
+        :raises NotADirectoryError: If `path` exists but is not a directory.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Path does not exist: {path}")
+        if not path.is_dir():
+            raise NotADirectoryError(f"Path is not a directory: {path}")
+
+        normalized = _apply_include_text_files(content, include_text_files)
+        cache_path = get_validated_cache(str(path), model_path, normalized)
+        if cache_path:
+            return cls.load_from_disk(cache_path)
+        model, model_path = load_model(model_path)
+
+        path = path.resolve()
+        previous = load_previous_for_incremental(str(path), model_path, normalized)
+        return _build(path, model, model_path, normalized, show_progress_bar, previous)
+
+    @classmethod
+    def merge(cls, indexes: Sequence[tuple[str, SembleIndex]]) -> SembleIndex:
+        """Merge indexes built from several repos into one that searches them together.
+
+        :param indexes: (source, index) pairs, where source is the local path or git URL the index was built from.
+        :return: A new in-memory index over all chunks.
+        :raises ValueError: If the indexes were built with different models, or the same repo is passed twice.
+        """
+        if len({index._model_path for _, index in indexes}) != 1:
+            raise ValueError("Indexes to merge must be built with the same model.")
+        normalized = [(s if is_git_url(s) else str(Path(s).expanduser().resolve()), index) for s, index in indexes]
+        # Sort by resolved source so the same set of repos always gets the same labels, whatever the argument order.
+        resolved = sorted(normalized, key=lambda pair: pair[0])
+        sources = [source for source, _ in resolved]
+        if duplicates := sorted({source for source in sources if sources.count(source) > 1}):
+            raise ValueError(f"The same repo was passed more than once: {duplicates}")
+        labels: list[str] = []
+        for source in sources:
+            name = label = Path(source).name.removesuffix(".git")
+            suffix = 2
+            while label in labels:  # another repo already has this name, append a suffix
+                label = f"{name}-{suffix}"
+                suffix += 1
+            labels.append(label)
+        parts = [(label, index) for label, (_, index) in zip(labels, resolved)]
+
+        chunks = [
+            replace(chunk, file_path=f"{label}/{chunk.file_path}") for label, index in parts for chunk in index.chunks
+        ]
+        bm25 = BM25.merge([(label, index._bm25_index) for label, index in parts])
+        vectors = np.vstack([index._semantic_index.vectors for _, index in parts])
+
+        first = parts[0][1]
+        merged = cls(
+            first.model,
+            bm25,
+            SelectableBasicBackend(vectors, BasicArgs()),
+            chunks,
+            first._model_path,
+            content=first.content,
+        )
+        merged.sources = dict(zip(labels, sources))
+        merged._file_sizes = {
+            f"{label}/{path}": size for label, index in parts for path, size in index._file_sizes.items()
+        }
+        return merged
+
+    @classmethod
+    def from_git(
+        cls,
+        url: str,
+        ref: str | None = None,
+        model_path: str | None = None,
+        content: ContentType | Sequence[ContentType] = _DEFAULT_CONTENT,
+        include_text_files: bool | None = None,
+        show_progress_bar: bool = False,
+    ) -> SembleIndex:
+        """Clone a git repository and index it.
+
+        The repository is cloned into a temporary directory that is removed once
+        indexing finishes. Chunk content is preserved in-memory, but
+        chunk.file_path will not point to a readable file after this call
+        returns — it is a repo-relative label, not a filesystem path.
+
+        :param url: URL of the git repository to clone (any git provider).
+        :param ref: Branch or tag to check out. Defaults to the remote HEAD.
+        :param model_path: Path to the model to use. If None, the default model will be used.
+        :param content: Content types to index, e.g. (ContentType.CODE,) or (ContentType.CODE, ContentType.DOCS).
+        :param include_text_files: Deprecated. Pass content=(ContentType.CODE, ContentType.DOCS, ...) instead.
+        :param show_progress_bar: Show a progress bar while indexing.
+        :return: An indexed SembleIndex. Chunk file paths are repo-relative (e.g. ``src/foo.py``).
+        :raises RuntimeError: If git is not on PATH, the clone fails, or times out.
+        """
+        normalized = _apply_include_text_files(content, include_text_files)
+        cache_key = f"{url}@{ref}" if ref else url
+        cache_path = get_validated_cache(cache_key, model_path, normalized)
+        if cache_path:
+            return cls.load_from_disk(cache_path)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # `--` prevents `url` from being interpreted as a git option (e.g. `--upload-pack=...`).
+            cmd = ["git", "clone", "--depth", "1", *(["--branch", ref] if ref else []), "--", url, tmp_dir]
+            try:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=_GIT_CLONE_TIMEOUT
+                )
+            except FileNotFoundError:
+                raise RuntimeError("git is not installed or not on PATH") from None
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"git clone timed out for {url!r} (limit: {_GIT_CLONE_TIMEOUT} s)") from None
+            if result.returncode != 0:
+                raise RuntimeError(f"git clone failed for {url!r}:\n{result.stderr.strip()}")
+
+            model, model_path = load_model(model_path)
+            return _build(Path(tmp_dir).resolve(), model, model_path, normalized, show_progress_bar)
+
+    def find_related(
+        self, source: Chunk | SearchResult, *, top_k: int = 5, max_snippet_lines: int | None = None
+    ) -> list[SearchResult]:
+        """Return chunks semantically similar to the given chunk or search result.
+
+        :param source: A SearchResult or Chunk to use as the seed.
+        :param top_k: Number of similar chunks to return.
+        :param max_snippet_lines: Lines of content to count for savings stats. None = full chunk.
+        :return: Ranked list of SearchResult objects, most similar first.
+        """
+        target = source.chunk if isinstance(source, SearchResult) else source
+        selector = self._get_selector_vector(filter_languages=[target.language]) if target.language else None
+        results = _search_semantic(target.content, self.model, self._semantic_index, self.chunks, top_k + 1, selector)
+        results = [r for r in results if r.chunk != target][:top_k]
+        save_search_stats(results, CallType.FIND_RELATED, self._file_sizes, max_snippet_lines)
+        return results
+
+    def _get_selector_vector(
+        self, filter_languages: list[str] | None = None, filter_paths: list[str] | None = None
+    ) -> npt.NDArray[np.int_] | None:
+        """Create a vector of chunk indices to restrict retrieval to."""
+        selector = []
+        for language in filter_languages or []:
+            selector.extend(self._language_mapping.get(language, []))
+        for filename in filter_paths or []:
+            selector.extend(self._file_mapping.get(filename, []))
+
+        return np.unique(selector) if selector else None
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        alpha: float | None = None,
+        filter_languages: list[str] | None = None,
+        filter_paths: list[str] | None = None,
+        rerank: bool | None = None,
+        max_snippet_lines: int | None = None,
+    ) -> list[SearchResult]:
+        """Search the index and return the top-k most relevant chunks.
+
+        :param query: Natural-language or keyword query string.
+        :param top_k: Maximum number of results to return.
+        :param alpha: Blend weight for hybrid score combination; 1.0 = full semantic
+            weight, 0.0 = full BM25 weight. None auto-detects from query type.
+        :param filter_languages: Optional list of language codes; if set, only chunks in
+            these languages are returned.
+        :param filter_paths: Optional list of repo-relative file paths; if set, only
+            chunks from these files are returned.
+        :param rerank: Apply code-tuned reranking (file boost, identifier boost, path penalties).
+            Defaults to True when ContentType.CODE was indexed.
+        :param max_snippet_lines: Lines of content to count for savings stats. None = full chunk.
+        :return: Ranked list of SearchResult objects, best match first.
+        """
+        if not self.chunks or not query.strip():
+            return []
+
+        resolved_rerank = (ContentType.CODE in self._content) if rerank is None else rerank
+
+        selector = self._get_selector_vector(filter_languages, filter_paths)
+        results = search(
+            query,
+            self.model,
+            self._semantic_index,
+            self._bm25_index,
+            self.chunks,
+            top_k,
+            alpha=alpha,
+            selector=selector,
+            rerank=resolved_rerank,
+        )
+        save_search_stats(results, CallType.SEARCH, self._file_sizes, max_snippet_lines)
+        return results
+
+    @cached_property
+    def _bilingual_bm25_index(self) -> BM25:
+        """Derive the bilingual postings from the same chunks, including for legacy cache loads."""
+        return build_bilingual_bm25(self.chunks, self._bm25_index.doc_order)
+
+    def prepare_bilingual_search(self) -> None:
+        """Build the bilingual postings before serving the first query."""
+        _ = self._bilingual_bm25_index
+
+    def _full_file_token_count(self, file_path: str) -> int | None:
+        """Estimate tokens from a readable, indexed source file."""
+        if self._root is None or file_path not in self._file_mapping:
+            return None
+        try:
+            source = (self._root / file_path).resolve(strict=True)
+            if source.is_relative_to(self._root.resolve()) and source.stat().st_size <= MAX_FILE_BYTES:
+                return estimate_tokens(read_file_text(source))
+        except (OSError, RuntimeError):
+            pass
+        return None
+
+    def search_explained(
+        self,
+        query: str,
+        top_k: int = 10,
+        *,
+        mode: SearchMode = "enhanced",
+        alpha: float | None = None,
+        rerank: bool | None = None,
+        token_budget: int | None = None,
+        filter_languages: list[str] | None = None,
+        filter_paths: list[str] | None = None,
+        previews: Mapping[Chunk, ChunkPreview] | None = None,
+        file_token_count: Callable[[str], int | None] | None = None,
+    ) -> ExplainedSearchResponse:
+        """Search with attributable scores, redacted previews and budgeted context."""
+        selector = self._get_selector_vector(filter_languages, filter_paths)
+        if selector is None and (filter_languages is not None or filter_paths is not None):
+            selector = np.empty(0, dtype=np.int_)
+        resolved_rerank = ContentType.CODE in self._content if rerank is None else rerank
+        return search_explained(
+            query,
+            self.model,
+            self._semantic_index,
+            self._bm25_index,
+            self.chunks,
+            top_k,
+            mode=mode,
+            alpha=alpha,
+            selector=selector,
+            rerank=resolved_rerank,
+            token_budget=token_budget,
+            bilingual_bm25_index=self._bilingual_bm25_index if mode in ("enhanced", "bm25") else None,
+            previews=previews,
+            file_token_count=file_token_count if file_token_count is not None else self._full_file_token_count,
+        )
+
+    @classmethod
+    def load_from_disk(cls: type[SembleIndex], path: Path | str) -> SembleIndex:
+        """Load the index from disk."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Index not found at {path}")
+        persistence_paths = PersistencePath.from_path(path)
+        non_existent = persistence_paths.non_existing()
+        if non_existent:
+            missing = ", ".join(str(p) for p in non_existent)
+            raise FileNotFoundError(f"Index not found at {path}. Missing: {missing}")
+
+        metadata = orjson.loads(persistence_paths.metadata.read_bytes())
+        found_version = metadata.get("cache_version")
+        if found_version != CACHE_FORMAT_VERSION:
+            raise ValueError(
+                f"Unsupported index format {found_version!r}; expected {CACHE_FORMAT_VERSION}. "
+                "Rebuild it with SembleIndex.from_path(<source directory>) before searching again."
+            )
+
+        bm25_index = BM25.load(persistence_paths.bm25_index)
+        semantic_index = SelectableBasicBackend.load(persistence_paths.semantic_index)
+        chunks = [Chunk.from_dict(item) for item in orjson.loads(persistence_paths.chunks.read_bytes())]
+        if not (len(chunks) == len(bm25_index.doc_order) == semantic_index.vectors.shape[0]):
+            raise ValueError("Persisted index components have inconsistent document counts")
+        root_path = metadata["root_path"]
+        model_path = metadata["model_path"]
+        content = tuple(ContentType(s) for s in metadata.get("content_type", ["code"]))
+        manifest = {
+            indexed_path: FileManifestEntry(**entry) for indexed_path, entry in metadata.get("files", {}).items()
+        }
+        if root_path:
+            root_path = Path(root_path)
+
+        model, model_path = load_model(model_path)
+
+        return cls(
+            model,
+            bm25_index,
+            semantic_index,
+            chunks,
+            model_path,
+            root=root_path,
+            content=content,
+            loaded_from_disk=True,
+            manifest=manifest,
+        )
+
+    def save(self, path: Path | str) -> None:
+        """Save the index to disk."""
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+
+        persistence_paths = PersistencePath.from_path(path)
+
+        self._bm25_index.save(persistence_paths.bm25_index)
+        self._semantic_index.save(persistence_paths.semantic_index)
+        persistence_paths.chunks.write_bytes(orjson.dumps(self.chunks))
+
+        root_str = None if self._root is None else str(self._root)
+        metadata = {
+            "root_path": root_str,
+            "time": datetime.now().timestamp(),
+            "model_path": self._model_path,
+            "content_type": list(x.value for x in self._content),
+            "chunk_size": _DESIRED_CHUNK_LENGTH_CHARS,
+            "cache_version": CACHE_FORMAT_VERSION,
+            "files": self._manifest,
+        }
+        persistence_paths.metadata.write_bytes(orjson.dumps(metadata))
+
+
+def _build(
+    path: Path,
+    model: StaticModel,
+    model_path: str,
+    content: tuple[ContentType, ...],
+    show_progress_bar: bool,
+    previous: PreviousIndex | None = None,
+) -> SembleIndex:
+    """Index a resolved directory, storing chunk paths relative to it."""
+    bm25_index, semantic_index, chunks, manifest = create_index_from_path(
+        path, model=model, content=content, display_root=path, previous=previous, show_progress_bar=show_progress_bar
+    )
+    return SembleIndex(
+        model, bm25_index, semantic_index, chunks, model_path, root=path, content=content, manifest=manifest
+    )

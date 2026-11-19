@@ -1,0 +1,1699 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Semble Workbench",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Report readiness and the currently loaded model and repositories.",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/repos": {
+      "get": {
+        "summary": "Repositories",
+        "description": "List local repository snapshots.",
+        "operationId": "repositories_api_repos_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RepoSummary"
+                  },
+                  "type": "array",
+                  "title": "Response Repositories Api Repos Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/repos/index": {
+      "post": {
+        "summary": "Index Repository",
+        "description": "Index an allowed directory or rebuild a registered snapshot.",
+        "operationId": "index_repository_api_repos_index_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndexRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoSummary"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search": {
+      "post": {
+        "summary": "Search",
+        "description": "Search with a score breakdown, redacted context, and optional rank comparison.",
+        "operationId": "search_api_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/repos/{repo_id}/files": {
+      "get": {
+        "summary": "Files",
+        "description": "List indexed files and their metadata.",
+        "operationId": "files_api_repos__repo_id__files_get",
+        "parameters": [
+          {
+            "name": "repo_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Repo Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FileSummary"
+                  },
+                  "title": "Response Files Api Repos  Repo Id  Files Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        }
+      }
+    },
+    "/api/repos/{repo_id}/chunks": {
+      "get": {
+        "summary": "Chunks",
+        "description": "Show redacted AST chunks and safe lexical token samples for one file.",
+        "operationId": "chunks_api_repos__repo_id__chunks_get",
+        "parameters": [
+          {
+            "name": "repo_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Repo Id"
+            }
+          },
+          {
+            "name": "file_path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "title": "File Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileChunks"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        }
+      }
+    },
+    "/api/chunks/related": {
+      "post": {
+        "summary": "Related",
+        "description": "Retrieve chunks near a selected source line in embedding space.",
+        "operationId": "related_api_chunks_related_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelatedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelatedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/benchmarks/run": {
+      "post": {
+        "summary": "Benchmarks",
+        "description": "Measure all retrieval modes against the built-in relevance annotations.",
+        "operationId": "benchmarks_api_benchmarks_run_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/security/audit": {
+      "get": {
+        "summary": "Audit",
+        "description": "List sanitized credential findings from one or all indexed snapshots.",
+        "operationId": "audit_api_security_audit_get",
+        "parameters": [
+          {
+            "name": "repo_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Repo Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request or source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AuditFinding": {
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "line": {
+            "type": "integer",
+            "title": "Line"
+          },
+          "rule": {
+            "type": "string",
+            "title": "Rule"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "redacted_preview": {
+            "type": "string",
+            "title": "Redacted Preview"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_path",
+          "line",
+          "rule",
+          "severity",
+          "redacted_preview"
+        ],
+        "title": "AuditFinding"
+      },
+      "AuditResponse": {
+        "properties": {
+          "total_findings": {
+            "type": "integer",
+            "title": "Total Findings"
+          },
+          "files_affected": {
+            "type": "integer",
+            "title": "Files Affected"
+          },
+          "by_rule": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Rule"
+          },
+          "by_severity": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Severity"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/AuditFinding"
+            },
+            "type": "array",
+            "title": "Findings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_findings",
+          "files_affected",
+          "by_rule",
+          "by_severity",
+          "findings"
+        ],
+        "title": "AuditResponse"
+      },
+      "BaselineComparison": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "enhanced",
+              "baseline",
+              "semantic",
+              "bm25"
+            ],
+            "title": "Mode"
+          },
+          "query_type": {
+            "type": "string",
+            "enum": [
+              "symbol",
+              "embedded_symbol",
+              "natural_language"
+            ],
+            "title": "Query Type"
+          },
+          "tokens": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tokens"
+          },
+          "detected_symbols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Detected Symbols"
+          },
+          "alpha_used": {
+            "type": "number",
+            "title": "Alpha Used"
+          },
+          "latency_ms": {
+            "type": "number",
+            "title": "Latency Ms"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ExplainedSearchResult"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "packed_tokens": {
+            "type": "integer",
+            "title": "Packed Tokens"
+          },
+          "full_file_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full File Tokens"
+          },
+          "savings_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings Pct"
+          },
+          "grep_estimated_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grep Estimated Tokens"
+          },
+          "bm25_hits": {
+            "type": "integer",
+            "title": "Bm25 Hits"
+          },
+          "packed_context": {
+            "items": {
+              "$ref": "#/components/schemas/ContextFragment"
+            },
+            "type": "array",
+            "title": "Packed Context"
+          },
+          "rank_deltas": {
+            "items": {
+              "$ref": "#/components/schemas/RankDelta"
+            },
+            "type": "array",
+            "title": "Rank Deltas"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "mode",
+          "query_type",
+          "tokens",
+          "detected_symbols",
+          "alpha_used",
+          "latency_ms",
+          "results",
+          "packed_tokens",
+          "full_file_tokens",
+          "savings_pct",
+          "grep_estimated_tokens",
+          "bm25_hits",
+          "packed_context",
+          "rank_deltas"
+        ],
+        "title": "BaselineComparison"
+      },
+      "BenchmarkMetrics": {
+        "properties": {
+          "ndcg_at_10": {
+            "type": "number",
+            "title": "Ndcg At 10"
+          },
+          "mrr_at_10": {
+            "type": "number",
+            "title": "Mrr At 10"
+          },
+          "recall_at_5": {
+            "type": "number",
+            "title": "Recall At 5"
+          },
+          "p95_latency_ms": {
+            "type": "number",
+            "title": "P95 Latency Ms"
+          },
+          "avg_token_savings_pct": {
+            "type": "number",
+            "title": "Avg Token Savings Pct"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ndcg_at_10",
+          "mrr_at_10",
+          "recall_at_5",
+          "p95_latency_ms",
+          "avg_token_savings_pct"
+        ],
+        "title": "BenchmarkMetrics"
+      },
+      "BenchmarkQuery": {
+        "properties": {
+          "repo_id": {
+            "type": "string",
+            "title": "Repo Id"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "relevant_chunk_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Relevant Chunk Ids"
+          },
+          "modes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BenchmarkQueryMetrics"
+            },
+            "propertyNames": {
+              "enum": [
+                "enhanced",
+                "baseline",
+                "semantic",
+                "bm25"
+              ]
+            },
+            "type": "object",
+            "title": "Modes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo_id",
+          "category",
+          "query",
+          "relevant_chunk_ids",
+          "modes"
+        ],
+        "title": "BenchmarkQuery"
+      },
+      "BenchmarkQueryMetrics": {
+        "properties": {
+          "ndcg_at_10": {
+            "type": "number",
+            "title": "Ndcg At 10"
+          },
+          "mrr_at_10": {
+            "type": "number",
+            "title": "Mrr At 10"
+          },
+          "recall_at_5": {
+            "type": "number",
+            "title": "Recall At 5"
+          },
+          "latency_ms": {
+            "type": "number",
+            "title": "Latency Ms"
+          },
+          "token_savings_pct": {
+            "type": "number",
+            "title": "Token Savings Pct"
+          },
+          "ranked_chunk_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ranked Chunk Ids"
+          },
+          "bm25_hits": {
+            "type": "integer",
+            "title": "Bm25 Hits"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ndcg_at_10",
+          "mrr_at_10",
+          "recall_at_5",
+          "latency_ms",
+          "token_savings_pct",
+          "ranked_chunk_ids",
+          "bm25_hits"
+        ],
+        "title": "BenchmarkQueryMetrics"
+      },
+      "BenchmarkResponse": {
+        "properties": {
+          "query_count": {
+            "type": "integer",
+            "title": "Query Count"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BenchmarkMetrics"
+            },
+            "propertyNames": {
+              "enum": [
+                "enhanced",
+                "baseline",
+                "semantic",
+                "bm25"
+              ]
+            },
+            "type": "object",
+            "title": "Metrics"
+          },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/BenchmarkQuery"
+            },
+            "type": "array",
+            "title": "Queries"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query_count",
+          "metrics",
+          "queries"
+        ],
+        "title": "BenchmarkResponse"
+      },
+      "Chunk": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "start_line": {
+            "type": "integer",
+            "title": "Start Line"
+          },
+          "end_line": {
+            "type": "integer",
+            "title": "End Line"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content",
+          "file_path",
+          "start_line",
+          "end_line"
+        ],
+        "title": "Chunk",
+        "description": "A single indexable unit of code."
+      },
+      "ContentType": {
+        "type": "string",
+        "enum": [
+          "code",
+          "docs",
+          "config"
+        ],
+        "title": "ContentType",
+        "description": "Content type for indexing and search pipeline selection."
+      },
+      "ContextFragment": {
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "start_line": {
+            "type": "integer",
+            "title": "Start Line"
+          },
+          "end_line": {
+            "type": "integer",
+            "title": "End Line"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_path",
+          "start_line",
+          "end_line",
+          "content",
+          "estimated_tokens"
+        ],
+        "title": "ContextFragment"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorResponse"
+      },
+      "ExplainedSearchResult": {
+        "properties": {
+          "chunk": {
+            "$ref": "#/components/schemas/Chunk"
+          },
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "rank": {
+            "type": "integer",
+            "title": "Rank"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "breakdown": {
+            "$ref": "#/components/schemas/ScoreBreakdown"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          },
+          "redacted_content": {
+            "type": "string",
+            "title": "Redacted Content"
+          },
+          "secrets_redacted": {
+            "type": "integer",
+            "title": "Secrets Redacted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk",
+          "chunk_id",
+          "rank",
+          "score",
+          "breakdown",
+          "estimated_tokens",
+          "redacted_content",
+          "secrets_redacted"
+        ],
+        "title": "ExplainedSearchResult"
+      },
+      "FileChunks": {
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "total_lines": {
+            "type": "integer",
+            "title": "Total Lines"
+          },
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/IndexedChunk"
+            },
+            "type": "array",
+            "title": "Chunks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_path",
+          "total_lines",
+          "chunks"
+        ],
+        "title": "FileChunks"
+      },
+      "FileSummary": {
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Language"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "total_lines": {
+            "type": "integer",
+            "title": "Total Lines"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          },
+          "path_penalty": {
+            "type": "number",
+            "title": "Path Penalty"
+          },
+          "secrets_detected": {
+            "type": "integer",
+            "title": "Secrets Detected"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_path",
+          "language",
+          "chunk_count",
+          "total_lines",
+          "estimated_tokens",
+          "path_penalty",
+          "secrets_detected"
+        ],
+        "title": "FileSummary"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "loaded_repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Loaded Repos"
+          },
+          "uptime_ms": {
+            "type": "number",
+            "title": "Uptime Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "model",
+          "loaded_repos",
+          "uptime_ms"
+        ],
+        "title": "Health"
+      },
+      "IndexRequest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path"
+          },
+          "repo_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Id"
+          },
+          "content_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ContentType"
+                },
+                "type": "array",
+                "maxItems": 3,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Types"
+          },
+          "force_rebuild": {
+            "type": "boolean",
+            "title": "Force Rebuild",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "IndexRequest"
+      },
+      "IndexedChunk": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "start_line": {
+            "type": "integer",
+            "title": "Start Line"
+          },
+          "end_line": {
+            "type": "integer",
+            "title": "End Line"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          },
+          "bm25_tokens_preview": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Bm25 Tokens Preview"
+          },
+          "secrets_redacted": {
+            "type": "integer",
+            "title": "Secrets Redacted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "start_line",
+          "end_line",
+          "content",
+          "estimated_tokens",
+          "bm25_tokens_preview",
+          "secrets_redacted"
+        ],
+        "title": "IndexedChunk"
+      },
+      "RankDelta": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "start_line": {
+            "type": "integer",
+            "title": "Start Line"
+          },
+          "end_line": {
+            "type": "integer",
+            "title": "End Line"
+          },
+          "baseline_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Rank"
+          },
+          "primary_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Rank"
+          },
+          "rank_delta": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank Delta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "file_path",
+          "start_line",
+          "end_line",
+          "baseline_rank",
+          "primary_rank",
+          "rank_delta"
+        ],
+        "title": "RankDelta"
+      },
+      "RelatedRequest": {
+        "properties": {
+          "repo_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+            "title": "Repo Id"
+          },
+          "file_path": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "File Path"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Line"
+          },
+          "top_k": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "default": 5
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo_id",
+          "file_path",
+          "line"
+        ],
+        "title": "RelatedRequest"
+      },
+      "RelatedResponse": {
+        "properties": {
+          "repo_id": {
+            "type": "string",
+            "title": "Repo Id"
+          },
+          "file_path": {
+            "type": "string",
+            "title": "File Path"
+          },
+          "line": {
+            "type": "integer",
+            "title": "Line"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/RelatedResult"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo_id",
+          "file_path",
+          "line",
+          "results"
+        ],
+        "title": "RelatedResponse"
+      },
+      "RelatedResult": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "chunk": {
+            "$ref": "#/components/schemas/Chunk"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "estimated_tokens": {
+            "type": "integer",
+            "title": "Estimated Tokens"
+          },
+          "secrets_redacted": {
+            "type": "integer",
+            "title": "Secrets Redacted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "chunk",
+          "score",
+          "estimated_tokens",
+          "secrets_redacted"
+        ],
+        "title": "RelatedResult"
+      },
+      "RepoSummary": {
+        "properties": {
+          "repo_id": {
+            "type": "string",
+            "title": "Repo Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "indexed_files": {
+            "type": "integer",
+            "title": "Indexed Files"
+          },
+          "total_chunks": {
+            "type": "integer",
+            "title": "Total Chunks"
+          },
+          "languages": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Languages"
+          },
+          "index_ms": {
+            "type": "number",
+            "title": "Index Ms"
+          },
+          "content_types": {
+            "items": {
+              "$ref": "#/components/schemas/ContentType"
+            },
+            "type": "array",
+            "title": "Content Types"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo_id",
+          "name",
+          "path",
+          "indexed_files",
+          "total_chunks",
+          "languages",
+          "index_ms",
+          "content_types"
+        ],
+        "title": "RepoSummary"
+      },
+      "ScoreBreakdown": {
+        "properties": {
+          "semantic_raw": {
+            "type": "number",
+            "title": "Semantic Raw"
+          },
+          "semantic_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Rank"
+          },
+          "semantic_rrf": {
+            "type": "number",
+            "title": "Semantic Rrf"
+          },
+          "bm25_raw": {
+            "type": "number",
+            "title": "Bm25 Raw"
+          },
+          "bm25_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bm25 Rank"
+          },
+          "bm25_rrf": {
+            "type": "number",
+            "title": "Bm25 Rrf"
+          },
+          "alpha_weight": {
+            "type": "number",
+            "title": "Alpha Weight"
+          },
+          "fused_rrf": {
+            "type": "number",
+            "title": "Fused Rrf"
+          },
+          "multi_chunk_boost": {
+            "type": "number",
+            "title": "Multi Chunk Boost"
+          },
+          "query_boost": {
+            "type": "number",
+            "title": "Query Boost"
+          },
+          "boost_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Boost Reasons"
+          },
+          "path_penalty": {
+            "type": "number",
+            "title": "Path Penalty"
+          },
+          "saturation_decay": {
+            "type": "number",
+            "title": "Saturation Decay"
+          },
+          "final_score": {
+            "type": "number",
+            "title": "Final Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "semantic_raw",
+          "semantic_rank",
+          "semantic_rrf",
+          "bm25_raw",
+          "bm25_rank",
+          "bm25_rrf",
+          "alpha_weight",
+          "fused_rrf",
+          "multi_chunk_boost",
+          "query_boost",
+          "boost_reasons",
+          "path_penalty",
+          "saturation_decay",
+          "final_score"
+        ],
+        "title": "ScoreBreakdown"
+      },
+      "SearchRequest": {
+        "properties": {
+          "repo_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+            "title": "Repo Id"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "top_k": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "default": 10
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "enhanced",
+              "baseline",
+              "semantic",
+              "bm25"
+            ],
+            "title": "Mode",
+            "default": "enhanced"
+          },
+          "alpha": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alpha"
+          },
+          "rerank": {
+            "type": "boolean",
+            "title": "Rerank",
+            "default": true
+          },
+          "token_budget": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Budget"
+          },
+          "redact_secrets": {
+            "type": "boolean",
+            "title": "Redact Secrets",
+            "description": "Recognized credentials are masked for either flag value.",
+            "default": true
+          },
+          "compare_baseline": {
+            "type": "boolean",
+            "title": "Compare Baseline",
+            "default": true
+          },
+          "filter_languages": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Languages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "repo_id",
+          "query"
+        ],
+        "title": "SearchRequest"
+      },
+      "SearchResponse": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "enhanced",
+              "baseline",
+              "semantic",
+              "bm25"
+            ],
+            "title": "Mode"
+          },
+          "query_type": {
+            "type": "string",
+            "enum": [
+              "symbol",
+              "embedded_symbol",
+              "natural_language"
+            ],
+            "title": "Query Type"
+          },
+          "tokens": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tokens"
+          },
+          "detected_symbols": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Detected Symbols"
+          },
+          "alpha_used": {
+            "type": "number",
+            "title": "Alpha Used"
+          },
+          "latency_ms": {
+            "type": "number",
+            "title": "Latency Ms"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ExplainedSearchResult"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "packed_tokens": {
+            "type": "integer",
+            "title": "Packed Tokens"
+          },
+          "full_file_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full File Tokens"
+          },
+          "savings_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savings Pct"
+          },
+          "grep_estimated_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grep Estimated Tokens"
+          },
+          "bm25_hits": {
+            "type": "integer",
+            "title": "Bm25 Hits"
+          },
+          "packed_context": {
+            "items": {
+              "$ref": "#/components/schemas/ContextFragment"
+            },
+            "type": "array",
+            "title": "Packed Context"
+          },
+          "baseline_comparison": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BaselineComparison"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "mode",
+          "query_type",
+          "tokens",
+          "detected_symbols",
+          "alpha_used",
+          "latency_ms",
+          "results",
+          "packed_tokens",
+          "full_file_tokens",
+          "savings_pct",
+          "grep_estimated_tokens",
+          "bm25_hits",
+          "packed_context",
+          "baseline_comparison"
+        ],
+        "title": "SearchResponse"
+      }
+    }
+  }
+}

@@ -1,0 +1,340 @@
+from __future__ import annotations
+
+import builtins
+import json
+import os
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from semble.cache import (
+    _get_valid_user_cache_dir,
+    _linux_cache_dir,
+    _windows_cache_dir,
+    find_index_from_cache_folder,
+    get_validated_cache,
+    resolve_cache_folder,
+    save_index_to_cache,
+)
+from semble.chunking.chunking import _DESIRED_CHUNK_LENGTH_CHARS
+from semble.index.types import CACHE_FORMAT_VERSION
+from semble.types import ContentType
+
+
+def test_find_index_from_cache_folder_local_path(tmp_path: Path) -> None:
+    """Local paths are normalised and content variants get distinct index directories."""
+    result = find_index_from_cache_folder(str(tmp_path))
+    assert result.name == "index"
+    assert result == find_index_from_cache_folder(str(tmp_path))
+    assert find_index_from_cache_folder(str(tmp_path), [ContentType.DOCS]).name == "index-docs"
+    assert find_index_from_cache_folder(str(tmp_path), list(ContentType)).name == "index-code-config-docs"
+
+
+def test_find_index_from_cache_folder_git_url() -> None:
+    """Git URLs are hashed as-is (not expanded via Path.resolve)."""
+    url = "https://github.com/org/repo.git"
+    result = find_index_from_cache_folder(url)
+    assert result.name == "index"
+    assert result != find_index_from_cache_folder("https://github.com/org/other.git")
+
+
+@pytest.mark.parametrize(
+    ("env", "expected_base"),
+    [
+        ({"LOCALAPPDATA": "C:\\Local", "APPDATA": "C:\\Roaming"}, "C:\\Local"),
+        ({"APPDATA": "C:\\Roaming"}, "C:\\Roaming"),
+    ],
+)
+def test_windows_cache_dir_env(env: dict[str, str], expected_base: str) -> None:
+    """_windows_cache_dir prefers LOCALAPPDATA, falls back to APPDATA."""
+    with patch.dict("os.environ", env, clear=True):
+        assert _windows_cache_dir("semble") == Path(expected_base) / "semble" / "Cache"
+
+
+def test_linux_cache_dir_with_xdg() -> None:
+    """_linux_cache_dir uses XDG_CACHE_HOME when set."""
+    with patch.dict("os.environ", {"XDG_CACHE_HOME": "/xdg"}, clear=True):
+        assert _linux_cache_dir("semble") == Path("/xdg") / "semble"
+
+
+@pytest.mark.parametrize(
+    ("fn", "expected_rel"),
+    [
+        (_windows_cache_dir, Path("AppData") / "Local" / "semble" / "Cache"),
+        (_linux_cache_dir, Path(".cache") / "semble"),
+    ],
+)
+def test_cache_dir_no_env(fn: object, expected_rel: Path) -> None:
+    """Both helpers fall back to a home-relative path when no env vars are set."""
+    home = Path("/fake/home")
+    with patch.dict("os.environ", {}, clear=True):
+        with patch("pathlib.Path.home", return_value=home):
+            assert fn("semble") == home / expected_rel  # type: ignore[operator]
+
+
+def test_save_index_to_cache(tmp_path: Path) -> None:
+    """A freshly built index is saved under its cache key."""
+    index = MagicMock(loaded_from_disk=False, content=(ContentType.DOCS,))
+    with patch("semble.cache.find_index_from_cache_folder", return_value=tmp_path / "index") as mock_find:
+        save_index_to_cache(index, "repo")
+    mock_find.assert_called_once_with("repo", (ContentType.DOCS,))
+    index.save.assert_called_once_with(tmp_path / "index")
+
+
+@pytest.mark.parametrize(
+    ("platform", "mock_target", "expected"),
+    [
+        ("win32", "semble.cache._windows_cache_dir", Path("/win")),
+        ("linux", "semble.cache._linux_cache_dir", Path("/linux")),
+        ("darwin", "semble.cache._macos_cache_dir", Path("/macos")),
+    ],
+)
+def test_resolve_cache_folder(platform: str, mock_target: str, expected: Path) -> None:
+    """resolve_cache_folder calls the correct platform helper."""
+    with (
+        patch.object(sys, "platform", platform),
+        patch.dict("os.environ", {}, clear=True),
+        patch(mock_target, return_value=expected) as mock_fn,
+        patch("pathlib.Path.mkdir"),
+    ):
+        result = resolve_cache_folder()
+    mock_fn.assert_called_once_with("semble")
+    assert result == expected
+
+
+def test_get_valid_user_cache_dir_relative_path() -> None:
+    """_get_valid_user_cache_dir returns None when SEMBLE_CACHE_LOCATION is a relative path."""
+    with patch.dict("os.environ", {"SEMBLE_CACHE_LOCATION": "relative/path"}):
+        with patch("semble.cache.logger") as mock_logger:
+            assert _get_valid_user_cache_dir() is None
+        mock_logger.warning.assert_called_once()
+
+
+def test_resolve_cache_folder_semble_cache_location(tmp_path: Path) -> None:
+    """SEMBLE_CACHE_LOCATION takes precedence over all platform-specific helpers."""
+    custom = tmp_path / "custom_cache"
+    with patch.dict("os.environ", {"SEMBLE_CACHE_LOCATION": str(custom)}):
+        result = resolve_cache_folder()
+    assert result == custom
+    assert custom.exists()
+
+
+def _write_metadata(
+    path: Path,
+    model_path: str,
+    content_type: list[str],
+    write_time: float,
+    file_paths: list[str] | None = None,
+    chunk_size: int | None = None,
+    cache_version: int | None = None,
+) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "chunks.json").write_text("[]")
+    (path / "bm25_index").write_text("")
+    (path / "semantic_index").write_text("")
+    (path / "metadata.json").write_text(
+        json.dumps(
+            {
+                "model_path": model_path,
+                "content_type": content_type,
+                "time": write_time,
+                "files": {file_path: {} for file_path in file_paths or []},
+                "chunk_size": chunk_size if chunk_size is not None else _DESIRED_CHUNK_LENGTH_CHARS,
+                "cache_version": cache_version if cache_version is not None else CACHE_FORMAT_VERSION,
+            }
+        )
+    )
+
+
+def test_get_validated_cache_invalid_index(tmp_path: Path) -> None:
+    """Returns None when the index directory is missing, incomplete, or has truncated metadata."""
+    with patch("semble.cache.find_index_from_cache_folder", return_value=tmp_path / "missing"):
+        assert get_validated_cache("/path", None, [ContentType.CODE]) is None
+
+    index_path = tmp_path / "index"
+    index_path.mkdir()
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        assert get_validated_cache("/path", None, [ContentType.CODE]) is None
+
+    _write_metadata(index_path, "my/model", ["code"], 0.0)
+    metadata = index_path / "metadata.json"
+    metadata.write_text(metadata.read_text()[:20])
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        assert get_validated_cache("/path", "my/model", [ContentType.CODE]) is None
+
+
+@pytest.mark.parametrize(
+    ("stored_model", "stored_content", "req_model", "req_content"),
+    [
+        ("other/model", ["code"], "my/model", [ContentType.CODE]),  # model mismatch
+        ("my/model", ["docs"], "my/model", [ContentType.CODE]),  # content mismatch
+        ("my/model", ["unknown_type"], "my/model", [ContentType.CODE]),  # invalid content value
+    ],
+)
+def test_get_validated_cache_metadata_mismatch(
+    stored_model: str,
+    stored_content: list[str],
+    req_model: str,
+    req_content: list[ContentType],
+    tmp_path: Path,
+) -> None:
+    """Returns None when stored model or content type doesn't match the request."""
+    index_path = tmp_path / "index"
+    _write_metadata(index_path, stored_model, stored_content, 0.0)
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        assert get_validated_cache("/path", req_model, req_content) is None
+
+
+def test_get_validated_cache_reads_utf8_metadata_with_non_ascii_file_paths(tmp_path: Path) -> None:
+    """Cache metadata is always UTF-8, even when the system default encoding is not."""
+    index_path = tmp_path / "index"
+    index_path.mkdir(parents=True)
+    (index_path / "chunks.json").write_text("[]")
+    (index_path / "bm25_index").write_text("")
+    (index_path / "semantic_index").write_text("")
+
+    non_ascii_path = "docs\\测试检查清单.md"
+    with pytest.raises(UnicodeDecodeError):
+        non_ascii_path.encode("utf-8").decode("cp936")
+
+    (index_path / "metadata.json").write_text(
+        json.dumps(
+            {
+                "model_path": "my/model",
+                "content_type": ["docs"],
+                "time": 0.0,
+                "files": {non_ascii_path: {}},
+                "chunk_size": _DESIRED_CHUNK_LENGTH_CHARS,
+                "cache_version": CACHE_FORMAT_VERSION,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    real_open = builtins.open
+
+    def open_with_cp936_default(file: object, mode: str = "r", *args: object, **kwargs: object):
+        if Path(file) == index_path / "metadata.json" and "b" not in mode and "encoding" not in kwargs:
+            kwargs["encoding"] = "cp936"
+        return real_open(file, mode, *args, **kwargs)
+
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        with patch("builtins.open", side_effect=open_with_cp936_default):
+            result = get_validated_cache("https://github.com/org/repo.git", "my/model", [ContentType.DOCS])
+    assert result == index_path
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("chunk_size", None),
+        ("chunk_size", _DESIRED_CHUNK_LENGTH_CHARS + 100),
+        ("cache_version", None),
+        ("cache_version", CACHE_FORMAT_VERSION - 1),
+    ],
+)
+def test_get_validated_cache_format_mismatch_returns_none(field: str, value: int | None, tmp_path: Path) -> None:
+    """Missing or stale persistence-format metadata forces a rebuild."""
+    index_path = tmp_path / "index"
+    _write_metadata(index_path, "my/model", ["code"], float("inf"))
+    metadata_path = index_path / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    if value is None:
+        del metadata[field]
+    else:
+        metadata[field] = value
+    metadata_path.write_text(json.dumps(metadata))
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        assert get_validated_cache("/path", "my/model", [ContentType.CODE]) is None
+
+
+def test_get_validated_cache_legacy_metadata_returns_none(tmp_path: Path) -> None:
+    """Old cache metadata missing content_type returns None instead of crashing."""
+    index_path = tmp_path / "index"
+    index_path.mkdir(parents=True)
+    (index_path / "chunks.json").write_text("[]")
+    (index_path / "bm25_index").write_text("")
+    (index_path / "semantic_index").write_text("")
+    (index_path / "metadata.json").write_text(json.dumps({"model_path": "my/model", "time": 0.0}))
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        assert get_validated_cache("/path", "my/model", [ContentType.CODE]) is None
+
+
+def test_get_validated_cache_resolves_default_model(tmp_path: Path) -> None:
+    """When model_path is None, resolve_model_name() is used for comparison."""
+    index_path = tmp_path / "index"
+    _write_metadata(index_path, "default/model", ["code"], 0.0)
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        with patch("semble.cache.resolve_model_name", return_value="other/model"):
+            assert get_validated_cache("/path", None, [ContentType.CODE]) is None
+
+
+def test_get_validated_cache_git_url_returns_immediately(tmp_path: Path) -> None:
+    """Git URL paths skip file-mtime checks and return the index path directly."""
+    index_path = tmp_path / "index"
+    _write_metadata(index_path, "my/model", ["code"], 0.0)
+    url = "https://github.com/org/repo.git"
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        result = get_validated_cache(url, "my/model", [ContentType.CODE])
+    assert result == index_path
+
+
+@pytest.mark.parametrize(
+    ("text", "mtime_offset_ns", "expected_valid"),
+    [
+        ("x = 1", 0, True),  # unchanged since indexing
+        ("x = 1", 1_000_000_000, False),  # modified, newer mtime
+        ("x = 1", -1_000_000_000, False),  # modified, older mtime (edit during indexing, cp -p)
+        ("", 0, False),  # emptied since indexing, so skipped and missing from current files
+        ("x = 1", None, False),  # deleted mid-walk, so skipped and missing from current files
+    ],
+)
+def test_get_validated_cache_mtime(
+    text: str, mtime_offset_ns: int | None, expected_valid: bool, tmp_path: Path
+) -> None:
+    """Returns None when a tracked file's mtime differs from its manifest entry; the path otherwise."""
+    index_path = tmp_path / "index"
+    src = tmp_path / "src.py"
+    src.write_text(text)
+    recorded_ns = src.stat().st_mtime_ns
+    _write_metadata(index_path, "my/model", ["code"], recorded_ns / 1e9, file_paths=["src.py"])
+    metadata = json.loads((index_path / "metadata.json").read_text())
+    metadata["files"]["src.py"] = {"mtime_ns": recorded_ns}
+    (index_path / "metadata.json").write_text(json.dumps(metadata))
+    if mtime_offset_ns is None:
+        src.unlink()
+    else:
+        os.utime(src, ns=(recorded_ns + mtime_offset_ns, recorded_ns + mtime_offset_ns))
+
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        with patch("semble.cache.walk_files", return_value=[src]):
+            result = get_validated_cache(str(tmp_path), "my/model", [ContentType.CODE])
+    assert result == (index_path if expected_valid else None)
+
+
+@pytest.mark.parametrize(
+    ("stored_files", "current_files"),
+    [
+        (["deleted.py"], []),  # file deleted since indexing
+        ([], ["new.py"]),  # new file added since indexing
+    ],
+)
+def test_get_validated_cache_manifest_mismatch(
+    stored_files: list[str], current_files: list[str], tmp_path: Path
+) -> None:
+    """Returns None when the current file set differs from the stored manifest."""
+    index_path = tmp_path / "index"
+    walk_return = []
+    for f in current_files:
+        p = tmp_path / f
+        # Make sure file is not empty
+        p.write_text("a")
+        walk_return.append(p)
+    _write_metadata(index_path, "my/model", ["code"], float("inf"), file_paths=stored_files)
+    with patch("semble.cache.find_index_from_cache_folder", return_value=index_path):
+        with patch("semble.cache.walk_files", return_value=walk_return):
+            result = get_validated_cache(str(tmp_path), "my/model", [ContentType.CODE])
+    assert result is None

@@ -1,0 +1,560 @@
+# Installation
+
+## Recommended: `semble install`
+
+The interactive installer detects your installed agents and configures any combination of four integrations globally:
+
+- **[MCP server](#mcp-server)**: exposes Semble as a native tool your agent can call directly.
+- **[AGENTS.md](#instructions-agentsmd--claudemd)**: adds a Semble usage guide to the agent's config file (`CLAUDE.md`, `AGENTS.md`, etc.).
+- **[Sub-agent](#sub-agent)**: installs a dedicated `semble-search` sub-agent for harnesses that support it.
+- **[Skill](#skill)**: installs a `semble` skill plus a one-line pointer to it in AGENTS.md / CLAUDE.md, as an alternative to the full block. Off by default.
+
+Install the CLI with [uv](https://docs.astral.sh/uv/getting-started/installation/), then run:
+
+```bash
+uv tool install semble
+semble install
+```
+
+To undo:
+
+```bash
+semble uninstall
+```
+
+Supported agents: Claude Code, Cursor, Gemini CLI, Kiro, OpenCode, GitHub Copilot, Codex, VS Code, Windsurf, Zed, Reasonix, Pi, Command Code, Antigravity, ZCode, Grok Build, Qwen Code, Cline, and Kilo Code.
+
+> **Pi prerequisite:** Pi requires the MCP extension to be installed before semble can connect. Run `pi install npm:pi-mcp-extension` once, then `semble install`.
+
+### Unattended install
+
+For sandboxed or scripted environments, pass `--agent` to skip the interactive prompts:
+
+```bash
+semble install --agent claude pi --type mcp subagent --yes
+```
+
+- `--agent` — one or more agent ids (see the list above; use the lowercase form, e.g. `claude`, `codex`, `pi`).
+- `--type` — one or more of `mcp`, `instructions`, `subagent`, `skill`, or `all` (default: all but `skill`). Requires `--agent`.
+- `-y`/`--yes` — skip the confirmation prompt. Requires `--agent` for a fully non-interactive run.
+
+`semble uninstall` accepts the same flags.
+
+### Keeping installed configuration up to date
+
+The MCP server config, `AGENTS.md`/`CLAUDE.md` instructions, and sub-agent files that `semble install` writes all pin `uvx` to the exact semble version you have installed (`semble[mcp]==X.Y.Z`), so agents keep calling the version the instructions were written for rather than whatever is newest on PyPI. After upgrading (`uv tool upgrade semble` or `pip install --upgrade semble`), rerun `semble install`. This is idempotent and rewrites the pin (and anything else that changed) in place for every agent you select.
+
+---
+
+## Manual setup
+
+### MCP server
+
+> Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) to be installed.
+
+<details>
+<summary>Claude Code</summary>
+
+```bash
+claude mcp add semble -s user -- uvx --from "semble[mcp]" semble
+```
+
+</details>
+
+<details>
+<summary>Cursor</summary>
+
+Add to `~/.cursor/mcp.json` (or `.cursor/mcp.json` in your project):
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Codex</summary>
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.semble]
+command = "uvx"
+args = ["--from", "semble[mcp]", "semble"]
+```
+
+</details>
+
+<details>
+<summary>OpenCode</summary>
+
+Add to `~/.config/opencode/opencode.jsonc`:
+
+```json
+{
+  "mcp": {
+    "semble": {
+      "type": "local",
+      "command": ["uvx", "--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>VS Code</summary>
+
+Add to `.vscode/mcp.json` in your project (or your user profile's `mcp.json`):
+
+```json
+{
+  "servers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>GitHub Copilot CLI</summary>
+
+Add to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Windsurf</summary>
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Gemini CLI</summary>
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Kiro</summary>
+
+Add to `~/.kiro/settings/mcp.json` (or `.kiro/settings/mcp.json` in your project):
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Zed</summary>
+
+Add to `~/.config/zed/settings.json` (or `.zed/settings.json` in your project):
+
+```json
+{
+  "context_servers": {
+    "semble": {
+      "source": "custom",
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Reasonix</summary>
+
+Add to `~/.reasonix/config.json` (the backwards-compatible MCP config path read by all Reasonix versions):
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Pi</summary>
+
+First install the Pi MCP extension (one-time prerequisite):
+
+```bash
+pi install npm:pi-mcp-extension
+```
+
+Then add to `~/.pi/agent/mcp.json`:
+
+```json
+{
+ "mcpServers": {
+ "semble": {
+ "command": "uvx",
+ "args": ["--from", "semble[mcp]", "semble"]
+ }
+ }
+}
+```
+
+</details>
+
+<details>
+<summary>Antigravity</summary>
+
+Add to `~/.gemini/config/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Command Code</summary>
+
+Add to `~/.commandcode/mcp.json`:
+
+```json
+{
+ "mcpServers": {
+ "semble": {
+ "command": "uvx",
+ "args": ["--from", "semble[mcp]", "semble"]
+ }
+ }
+}
+```
+
+Or use the CLI:
+
+```bash
+cmd mcp add --scope user semble -- uvx --from "semble[mcp]" semble
+```
+
+</details>
+
+<details>
+<summary>ZCode</summary>
+
+Add to `~/.zcode/cli/config.json` under the nested `mcp.servers` key (or use Settings -> MCP Servers -> Full configuration mode):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "semble": {
+        "command": "uvx",
+        "args": ["--from", "semble[mcp]", "semble"],
+        "type": "stdio"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Grok Build</summary>
+
+Add to `~/.grok/config.toml`:
+
+```toml
+[mcp_servers.semble]
+command = "uvx"
+args = ["--from", "semble[mcp]", "semble"]
+```
+
+</details>
+
+<details>
+<summary>Qwen Code</summary>
+
+Add to `~/.qwen/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "command": "uvx",
+      "args": ["--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Cline</summary>
+
+Add to `~/.cline/data/settings/cline_mcp_settings.json` (shared by the Cline IDE extensions and CLI):
+
+```json
+{
+  "mcpServers": {
+    "semble": {
+      "transport": {
+        "type": "stdio",
+        "command": "uvx",
+        "args": ["--from", "semble[mcp]", "semble"]
+      }
+    }
+  }
+}
+```
+
+Or use the CLI:
+
+```bash
+cline mcp add semble --yes -- uvx --from "semble[mcp]" semble
+```
+
+</details>
+
+<details>
+<summary>Kilo Code</summary>
+
+Add to `~/.config/kilo/kilo.jsonc`:
+
+```json
+{
+  "mcp": {
+    "semble": {
+      "type": "local",
+      "command": ["uvx", "--from", "semble[mcp]", "semble"]
+    }
+  }
+}
+```
+
+</details>
+
+The MCP server indexes each requested content selection on first use and caches it separately. Searches default to code; append `--content docs`, `--content config`, or `--content all` to the server command to change that default. The `content` argument on an individual MCP search overrides it. For example, in Claude Code:
+
+```bash
+claude mcp add semble -s user -- uvx --from "semble[mcp]" semble --content all
+```
+
+Indexes stay in memory for the lifetime of the server. To free memory while idle, set `SEMBLE_MCP_IDLE_TIMEOUT` to a number of seconds; indexes unused for that long are dropped from memory and reloaded from the disk cache on the next search.
+
+#### Shared server (HTTP)
+
+By default each agent session starts its own semble process. To share one server (and one copy of the model and indexes) across sessions, start it yourself over HTTP:
+
+```bash
+uvx --from "semble[mcp]" semble --http --port 8000
+```
+
+It listens on `127.0.0.1` only. Then point your agents at `http://127.0.0.1:8000/mcp` instead of the `uvx` command:
+
+```bash
+# Claude Code
+claude mcp add --transport http semble -s user http://127.0.0.1:8000/mcp
+```
+
+```json
+// Cursor (~/.cursor/mcp.json)
+{ "mcpServers": { "semble": { "url": "http://127.0.0.1:8000/mcp" } } }
+```
+
+```toml
+# Codex (~/.codex/config.toml)
+[mcp_servers.semble]
+url = "http://127.0.0.1:8000/mcp"
+```
+
+Relative `repo` paths resolve against the directory the server was started in, so agents should pass absolute paths. `semble install` only sets up the stdio server.
+
+### Instructions (AGENTS.md / CLAUDE.md)
+
+Add the snippet below to your `AGENTS.md` or `CLAUDE.md` so your agent knows when and how to call the semble CLI:
+
+```markdown
+## Code Search
+
+Use `semble search` to find code by describing what it does or naming a symbol/identifier, instead of grep:
+
+​```bash
+semble search "authentication flow" ./my-project --max-snippet-lines 10  # first 10 lines only, concise
+semble search "save_pretrained" ./my-project                          # full chunk content
+semble search "save model to disk" ./my-project --top-k 10           # more results
+​```
+
+The index is built on first run (and cached for subsequent runs) and invalidated automatically when files change.
+
+Use `--content docs` to search documentation and prose, `--content config` for config files (yaml, toml, etc.), or `--content all` to search code, docs, and config:
+
+​```bash
+semble search "deployment guide" ./my-project --content docs
+semble search "database host port" ./my-project --content config
+semble search "authentication" ./my-project --content all
+​```
+
+Use `semble find-related` to discover code similar to a known location (pass `file_path` and `line` from a prior search result):
+
+​```bash
+semble find-related src/auth.py 42 ./my-project
+​```
+
+`path` defaults to the current directory when omitted; git URLs are accepted. Pass several paths or URLs to search related repos together, e.g. when this project calls a service defined in a sibling repo. Result paths are then prefixed with the repo name and the output includes a `repos` map from prefix to location:
+
+```bash
+semble search "invoice endpoint" ./service-a ../service-b
+```
+
+If `semble` is not on `$PATH`, use `uvx --from "semble[mcp]" semble` in its place.
+
+### Workflow
+
+1. Start with `semble search` to find relevant chunks. The index is built and cached automatically.
+2. Use `--content docs` for documentation, `--content config` for config files, or `--content all` for everything.
+3. Navigate directly to the returned file and line — do not re-search or grep for the same content.
+4. Optionally use `semble find-related` with a promising result's `file_path` and `line` to discover related implementations.
+5. If the answer may live in a dependent or sibling repo, pass all relevant repo paths to one `semble search` call.
+6. Use grep only when you need every occurrence of a literal string across the whole repo (e.g., all callers of a renamed function).
+```
+
+### Sub-agent
+
+For harnesses that support sub-agents (Claude Code, Cursor, Gemini CLI, Kiro, OpenCode, GitHub Copilot, Codex, Reasonix, Pi, Command Code, Antigravity, ZCode, Grok Build, Qwen Code, Kilo Code), you can install a dedicated `semble-search` sub-agent. Copy the appropriate file from [`src/semble/agents/`](../src/semble/agents/) to your agent's agents directory:
+
+> **Pi prerequisite:** Pi sub-agents require the Pi agents extension. Run `pi install npm:pi-agents` once before installing.
+
+| Agent | File | Destination |
+|---|---|---|
+| Claude Code | `claude.md` | `~/.claude/agents/semble-search.md` |
+| Cursor | `cursor.md` | `~/.cursor/agents/semble-search.md` |
+| Gemini CLI | `gemini.md` | `~/.gemini/agents/semble-search.md` |
+| Kiro | `kiro.md` | `~/.kiro/agents/semble-search.md` |
+| OpenCode | `opencode.md` | `~/.config/opencode/agents/semble-search.md` |
+| GitHub Copilot | `copilot.md` | `~/.copilot/agents/semble-search.agent.md` |
+| Codex | `codex.toml` | `~/.codex/agents/semble-search.toml` |
+| Reasonix | `reasonix.md` | `~/.reasonix/skills/semble-search.md` |
+| Pi | `pi.md` | `~/.pi/agents/semble-search.md` |
+| Command Code | `commandcode.md` | `~/.commandcode/agents/semble-search.md` |
+| Antigravity | `antigravity.md` | `~/.gemini/config/skills/semble-search/SKILL.md` |
+| ZCode | `zcode.md` | `~/.zcode/agents/semble-search.md` |
+| Grok Build | `grok.md` | `~/.grok/agents/semble-search.md` |
+| Qwen Code | `qwen.md` | `~/.qwen/agents/semble-search.md` |
+| Kilo Code | `kilo.md` | `~/.config/kilo/agents/semble-search.md` |
+
+### Skill
+
+For harnesses that support [Agent Skills](https://agentskills.io), you can install a `semble` skill instead of the AGENTS.md block. Copy [`src/semble/agents/skill.md`](../src/semble/agents/skill.md) to the destination below as `SKILL.md`:
+
+| Agent | Destination |
+|---|---|
+| Claude Code | `~/.claude/skills/semble/SKILL.md` |
+| Qwen Code | `~/.qwen/skills/semble/SKILL.md` |
+| Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode, Pi, Kilo Code | `~/.agents/skills/semble/SKILL.md` |
+
+`~/.agents/skills` is shared between agents, so uninstalling the skill for one of them removes it for all of them.
+
+Agents rarely load a skill on their own, so also add this line to your AGENTS.md / CLAUDE.md (`semble install` does this for you):
+
+```markdown
+Use the `semble` skill for code search instead of Grep or Glob.
+```
+
+## Local retrieval workbench
+
+Install the optional server dependencies and the existing MCP extra, which supplies the Uvicorn launcher.
+From the repository root on Windows, run the following commands.
+
+```powershell
+uv sync --locked --extra server --extra mcp --extra dev
+.\.venv\Scripts\python.exe -m semble.server.main
+.\.venv\Scripts\uvicorn.exe semble.server.main:app --host 127.0.0.1 --port 8000
+```
+
+The server uses the existing local cache for `minishlab/potion-code-16M-v2` or a model directory supplied
+through `SEMBLE_MODEL_NAME`. It loads the model offline. Startup indexes the 29 upstream Python source
+files and creates an isolated, 11-file bilingual demo containing clearly labeled synthetic credentials.
+The API docs are available at [localhost:8000/docs](http://127.0.0.1:8000/docs). The checked-in contract is
+[openapi.json](openapi.json).
+
+The server accepts directories under the checkout and its demo root. Set `SEMBLE_ALLOWED_ROOTS` to a
+list of additional trusted local roots separated by the OS path separator. Registration keeps an in-memory snapshot.
+Send `force_rebuild: true` to refresh file contents, counts and audit findings after editing the sources.
+
+`SembleIndex.search_explained` and `POST /api/search` support `enhanced`, `baseline`, `semantic` and
+`bm25`. Enhanced and BM25 searches derive a bilingual postings index from the same chunks. The baseline
+uses the upstream ASCII postings and reranker. Existing saved indexes load with the same persistence format.
+The semantic and BM25 ablations score by reciprocal rank and skip reranking. A positive `rank_delta` means
+the chunk moved up relative to baseline. Missing ranks and their deltas are `null`.
+
+`results` contains the ranked AST hits. Use `packed_context` for an LLM prompt. It deduplicates overlapping
+lines, joins adjacent spans and honors `token_budget`. Savings compare the packed estimate with the complete
+source text of each represented file counted once. Recognized credentials are masked in API code previews,
+token samples, audit records and search responses, including when a caller supplies `redact_secrets: false`.
